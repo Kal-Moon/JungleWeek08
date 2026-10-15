@@ -1,0 +1,18 @@
+name: 작업 · 학습 · 테스트
+description: 필요한 내용과 확인한 결과를 기록합니다.
+body:
+  - type: textarea
+    id: content
+    attributes:
+      label: 내용
+      placeholder: 작업하거나 살펴볼 내용을 적어주세요.
+  - type: textarea
+    id: related
+    attributes:
+      label: 관련 자료 · 이슈
+      placeholder: 관련 링크나 이슈 번호를 적어주세요.
+  - type: textarea
+    id: result
+    attributes:
+      label: 확인 내용
+      placeholder: 확인한 내용이나 실행 결과를 적어주세요.
