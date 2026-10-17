@@ -38,6 +38,7 @@ process_init (void) {
  * before process_create_initd() returns. Returns the initd's
  * thread id, or TID_ERROR if the thread cannot be created.
  * Notice that THIS SHOULD BE CALLED ONCE. */
+
 tid_t
 process_create_initd (const char *file_name) {
 	char *fn_copy;
@@ -158,7 +159,7 @@ error:
 	thread_exit ();
 }
 
-/* Switch the current execution context to the f_name.
+/* Switch the current execution context to the f_name.	//현재 실행 중인 문맥을 f_name 프로그램으로 바꿈
  * Returns -1 on fail. */
 int
 process_exec (void *f_name) {
@@ -328,6 +329,9 @@ load (const char *file_name, struct intr_frame *if_) {
 	off_t file_ofs;
 	bool success = false;
 	int i;
+	char *fn_copy = NULL;               /* 커맨드라인 복사본. done 에서 해제하므로 NULL 로 시작. */
+	char *program_name;                 /* 커맨드라인의 첫 단어 (실행 파일 이름). */
+	char *save_ptr;                     /* strtok_r 가 다음 자를 위치를 기억하는 곳. */
 
 	/* Allocate and activate page directory. */
 	t->pml4 = pml4_create ();
@@ -335,8 +339,22 @@ load (const char *file_name, struct intr_frame *if_) {
 		goto done;
 	process_activate (thread_current ());
 
+	/* load () 가 받은 커맨드라인은 const 라 strtok_r 로 직접 자를 수 없으므로,
+	   고쳐도 되는 복사본을 만들어 자른다. 잘라 낸 단어들은 스택에 쌓을 때까지 써야 해서
+	   복사본은 done 에서 해제한다. */
+	fn_copy = palloc_get_page (0);
+	if (fn_copy == NULL)
+		goto done;
+	strlcpy (fn_copy, file_name, PGSIZE);
+
+	/* 실행 파일 이름은 커맨드라인 전체가 아니라 첫 단어다.
+	   공백뿐인 커맨드라인이면 열 파일 이름이 없으므로 실패로 처리한다. */
+	program_name = strtok_r (fn_copy, " ", &save_ptr);
+	if (program_name == NULL)
+		goto done;
+
 	/* Open executable file. */
-	file = filesys_open (file_name);
+	file = filesys_open (program_name);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
@@ -421,6 +439,9 @@ load (const char *file_name, struct intr_frame *if_) {
 
 done:
 	/* We arrive here whether the load is successful or not. */
+	/* 성공 · 실패 어느 경로든 여기를 지나므로 복사본을 여기서 돌려준다.
+	   복사 전에 실패했으면 fn_copy 는 NULL 이고, palloc_free_page (NULL) 은 아무것도 하지 않는다. */
+	palloc_free_page (fn_copy);
 	file_close (file);
 	return success;
 }
