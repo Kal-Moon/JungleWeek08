@@ -500,6 +500,20 @@ init_thread(struct thread *t, const char *name, int priority)
 	t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void *);
 	t->priority = priority;
 	t->magic = THREAD_MAGIC;
+	
+#ifdef USERPROG
+	/* 프로세스 관련 필드 초기값.
+	   커널이 강제 종료하면 exit 을 거치지 않으므로, -1 이 그대로 남아 wait 이 -1 을 받는다. */
+	t->exit_status = -1;
+	t->parent = NULL;
+	list_init (&t->children);
+	sema_init (&t->wait_sema, 0);
+	sema_init (&t->free_sema, 0);
+	sema_init (&t->fork_sema, 0);
+	t->fd_table = NULL;
+	t->next_fd = 2;
+	t->running_file = NULL;
+#endif
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
