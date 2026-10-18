@@ -22,6 +22,8 @@
 #include "vm/vm.h"
 #endif
 
+#define ARGS_MAX 30 /* 커맨드라인에서 받을 수 있는 인자 개수 최대 (NULL 칸 미포함). 인자 전달. */
+
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
@@ -328,6 +330,13 @@ load (const char *file_name, struct intr_frame *if_) {
 	off_t file_ofs;
 	bool success = false;
 	int i;
+	char *words[ARGS_MAX];              /* 실행 파일 이름과 인자를 분리해 저장한다. */
+	char *save_ptr;                     /* strtok_r () 가 다음 토큰을 찾을 위치. */
+	char *token;						/* 현재 분리한 인자. */
+	int argc = 0;
+	char *arg_addrs[ARGS_MAX + 1];      /* 유저 스택에 복사한 인자 문자열의 주소와 NULL 종료 항목. */
+	size_t len;                         /* 널 문자를 포함한 인자 문자열의 크기. */
+	size_t zero_cnt;
 
 	/* Allocate and activate page directory. */
 	t->pml4 = pml4_create ();
@@ -335,10 +344,24 @@ load (const char *file_name, struct intr_frame *if_) {
 		goto done;
 	process_activate (thread_current ());
 
+	/* 커맨드라인에서 실행 파일 이름과 인자를 분리한다.
+	첫 번째 토큰은 실행 파일을 여는 데 사용한다. */
+
+	/* strtok_r () 는 호출할 때마다 다음 토큰을 반환한다.
+   원본 문자열을 수정하므로 쓰기 가능한 복사본을 사용한다. */
+	for (token = strtok_r ((char *) file_name, " ", &save_ptr);
+			token != NULL && argc < ARGS_MAX;
+			token = strtok_r (NULL, " ", &save_ptr))
+		words[argc++] = token;
+
+	/* 실행할 파일이 없으면 더 진행할 수 없다. */
+	if (argc == 0)
+		goto done;
+
 	/* Open executable file. */
-	file = filesys_open (file_name);
+	file = filesys_open (words[0]);
 	if (file == NULL) {
-		printf ("load: %s: open failed\n", file_name);
+		printf ("load: %s: open failed\n", words[0]);
 		goto done;
 	}
 
@@ -416,6 +439,42 @@ load (const char *file_name, struct intr_frame *if_) {
 
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */
+
+	/* 커널 주소에 있는 인자 문자열은 유저 프로그램에서 사용할 수 없으므로,
+		유저 스택에 복사하고 각 문자열의 주소를 저장한다. */
+	for (i = argc - 1; i >= 0; i--) {
+		len = strlen (words[i]) + 1;
+		if_->rsp -= len;
+		memcpy ((void *) if_->rsp, words[i], len);
+		arg_addrs[i] = (char *) if_->rsp;
+	}
+
+	/* 포인터 배열을 8바이트 경계에 맞추기 위해
+   현재 스택 포인터를 아래로 정렬하고 남는 공간을 0으로 채운다. */
+	zero_cnt = if_->rsp % 8;
+	if_->rsp -= zero_cnt;
+	memset ((void *) if_->rsp, 0, zero_cnt);
+
+
+	/* argv[argc] 가 NULL을 가리키도록 종료 항목을 추가한다.
+   	인자 주소를 역순으로 쌓아 argv[0] 이 가장 낮은 주소에 오게 한다. */
+	arg_addrs[argc] = NULL;
+
+	for (i = argc; i >= 0; i--) {
+		if_->rsp -= 8;
+		*(char **) if_->rsp = arg_addrs[i];
+	}
+
+
+	/* x86-64 는 함수 인자를 레지스터로 넘기므로, _start (argc, argv) 가 받도록
+	   rdi 에 argc, rsi 에 방금 만든 argv 배열의 시작 주소를 넣는다. */
+	if_->R.rsi = if_->rsp;
+	if_->R.rdi = argc;
+
+	/* 커널은 call 없이 _start로 점프하므로, 스택에 리턴 주소가 없다.
+       call이 쌓았을 리턴 주소 자리를 0으로 채워 일반적인 함수 호출의 스택 모양을 맞춘다. */
+	if_->rsp -= 8;
+	memset ((void *) if_->rsp, 0, 8);
 
 	success = true;
 
