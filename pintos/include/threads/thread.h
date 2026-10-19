@@ -8,7 +8,7 @@
 #ifdef VM
 #include "vm/vm.h"
 #endif
-
+#include "threads/synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status {
@@ -27,6 +27,11 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+
+#define FD_MAX 128                      /* 프로세스당 fd 테이블 크기. fd. */
+
+struct file;                            /* fd_table, running_file 에서 포인터로만 쓴다. */
+
 
 /* A kernel thread or user process.
  *
@@ -99,6 +104,17 @@ struct thread {
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
+	int exit_status;                    /* exit 에 넘긴 종료 상태. 커널이 죽이면 기본값 -1 그대로. exit · wait. */
+	struct thread *parent;              /* 나를 만든 부모. 부모가 먼저 끝나면 NULL. wait. */
+	struct list children;               /* 내가 만든 자식들. 직계 자식 확인용. wait · fork. */
+	struct list_elem child_elem;        /* 부모의 children 에 매달리는 고리. wait · fork. */
+	struct semaphore wait_sema;         /* 부모가 내 종료를 기다림. 내가 끝날 때 up. wait. */
+	struct semaphore free_sema;         /* 부모가 종료 상태를 읽을 때까지 내가 해제를 미룸. wait. */
+	struct semaphore fork_sema;         /* 부모가 내 복제 완료를 기다림. 복제 끝나면 up. fork. */
+	struct file **fd_table;             /* fd 번호 → 열린 파일. fd 0 · 1 은 콘솔용으로 비움. fd. */
+	int next_fd;                        /* 다음에 줄 fd 번호. fd. */
+	struct file *running_file;          /* 실행 중인 내 프로그램 파일. 쓰기 금지용. rox. */
+
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
