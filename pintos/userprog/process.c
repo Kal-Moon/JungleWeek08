@@ -55,7 +55,8 @@ process_create_initd (const char *file_name) {
 	strlcpy (fn_copy, file_name, PGSIZE);
 
 	/* 종료 메시지에는 프로그램 이름만 찍혀야 하므로 첫 단어만 스레드 이름으로 쓴다.
-	   fn_copy 는 load () 가 인자 전달에 전체 커맨드라인을 써야 하므로 따로 복사해 자른다. */
+	   fn_copy 는 load () 가 인자 전달에 전체 커맨드라인을 써야 하므로 건드리지 않고,
+	   이름용 복사본을 따로 만들어 자른다. */
 	strlcpy (thread_name, file_name, sizeof thread_name);
 	strtok_r (thread_name, " ", &save_ptr);
 
