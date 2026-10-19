@@ -43,6 +43,8 @@ process_init (void) {
 tid_t
 process_create_initd (const char *file_name) {
 	char *fn_copy;
+	char thread_name[16];               /* struct thread 의 name 크기와 같다. */
+	char *save_ptr;
 	tid_t tid;
 
 	/* Make a copy of FILE_NAME.
@@ -52,8 +54,13 @@ process_create_initd (const char *file_name) {
 		return TID_ERROR;
 	strlcpy (fn_copy, file_name, PGSIZE);
 
+	/* 종료 메시지에는 프로그램 이름만 찍혀야 하므로 첫 단어만 스레드 이름으로 쓴다.
+	   fn_copy 는 load () 가 인자 전달에 전체 커맨드라인을 써야 하므로 따로 복사해 자른다. */
+	strlcpy (thread_name, file_name, sizeof thread_name);
+	strtok_r (thread_name, " ", &save_ptr);
+
 	/* Create a new thread to execute FILE_NAME. */
-	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
+	tid = thread_create (thread_name, PRI_DEFAULT, initd, fn_copy);
 	if (tid == TID_ERROR)
 		palloc_free_page (fn_copy);
 	return tid;
@@ -217,6 +224,10 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
+	/* 종료 메시지. 페이지 테이블 (pml4) 이 있는 스레드만 유저 프로세스이므로
+	   커널 스레드는 찍지 않는다. process_cleanup () 이 pml4 를 지우기 전에 확인한다. */
+	if (curr->pml4 != NULL)
+		printf ("%s: exit(%d)\n", curr->name, curr->exit_status);
 
 	process_cleanup ();
 }
