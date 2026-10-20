@@ -12,6 +12,10 @@
 #include "userprog/process.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "threads/vaddr.h"
+#include "threads/mmu.h"
+#include "threads/palloc.h"     /* palloc_get_page */
+#include <string.h>             /* strlcpy */
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -37,7 +41,7 @@ static void sys_close (int fd);
  *
  * Previously system call services was handled by the interrupt handler
  * (e.g. int 0x80 in linux). However, in x86-64, the manufacturer supplies
- * efficient path for requesting the system call, the `syscall` instruction.
+ * efficient path for requesting the system call, the syscall instruction.
  *
  * The syscall instruction works by reading the values from the the Model
  * Specific Register (MSR). For the details, see the manual. */
@@ -141,9 +145,24 @@ sys_fork (const char *thread_name UNUSED, struct intr_frame *f UNUSED) {
 
 /* 현재 프로세스를 다른 프로그램으로 바꾼다. (A) */
 static int
-sys_exec (const char *cmd_line UNUSED) {
-	/* TODO (A): 구현. */
-	sys_exit (-1);
+sys_exec (const char *cmd_line) {
+char *cmd_copy;
+
+	/* 아래에서 커널이 문자열을 읽기 전에, 잘못된 주소면 이 프로세스만 끝낸다. */
+	validate_user_string (cmd_line);
+
+	/* process_exec () 는 load 전에 지금 유저 메모리를 지우고, 끝나면 받은 문자열을
+	   페이지로 해제한다. 그래서 유저 문자열을 그대로 넘기지 않고 커널 페이지에 복사한다. */
+	cmd_copy = palloc_get_page (0);
+	if (cmd_copy == NULL)
+		sys_exit (-1);
+	strlcpy (cmd_copy, cmd_line, PGSIZE);
+
+	/* 성공하면 새 프로그램으로 넘어가 돌아오지 않는다. 돌아왔다면 로드에 실패한 것이다.
+	   cmd_copy 는 process_exec () 안에서 이미 해제됐다. */
+	if (process_exec (cmd_copy) < 0)
+		sys_exit (-1);
+	return -1;
 }
 
 /* 자식이 끝날 때까지 기다리고 종료 상태를 받는다. (C) */
@@ -190,8 +209,11 @@ sys_read (int fd UNUSED, void *buffer UNUSED, unsigned size UNUSED) {
 /* 콘솔(fd 1, A) 또는 파일(B)에 쓴다. */
 static int
 sys_write (int fd, const void *buffer, unsigned size) {
+	/* 락을 쥔 채 exit 하지 않도록 파일 락보다 먼저 검사한다. */
+	validate_user_buffer(buffer, size);
+
 	/* fd 1 은 콘솔. 여러 번 나눠 출력하면 다른 프로세스 출력과 섞일 수 있어
-	   콘솔 락을 한 번만 잡는 putbuf () 로 한 번에 출력한다. */
+	   콘솔 락을 한 번만 잡는 putbuf () 로 한 번에 출력한다. */	
 	if (fd == 1) {
 		putbuf (buffer, size);
 		return size;
@@ -223,20 +245,34 @@ sys_close (int fd UNUSED) {
 
 /* 유저가 넘긴 주소 하나를 검사한다. NULL, 커널 영역, 매핑 안 된 주소면 exit (-1). (A) */
 void
-validate_user_addr (const void *uaddr UNUSED) {
-	/* TODO (A): 구현. */
+validate_user_addr (const void *uaddr) {
+	/* pml4_get_page () 는 커널 주소를 받으면 ASSERT 로 멈추므로 커널 영역부터 거른다. */
+	if (uaddr == NULL || !is_user_vaddr (uaddr)
+			|| pml4_get_page (thread_current ()->pml4, uaddr) == NULL)
+		sys_exit (-1);
 }
 
 /* 버퍼 전체(buffer ~ buffer + size - 1)를 검사한다. 페이지 경계 포함. (A) */
 void
-validate_user_buffer (const void *buffer UNUSED, unsigned size UNUSED) {
-	/* TODO (A): 구현. */
+validate_user_buffer (const void *buffer, unsigned size) {
+	const uint8_t *p = buffer;
+
+	for (unsigned i = 0; i < size; i++)
+		validate_user_addr (p + i);
 }
 
 /* 문자열을 '\0' 까지 검사한다. (A) */
 void
-validate_user_string (const char *str UNUSED) {
-	/* TODO (A): 구현. */
+validate_user_string (const char *str) {
+	const char *p = str;
+
+	/* 길이를 모르니 한 글자씩 가되, 커널이 읽기 전에 그 칸부터 검사한다. */
+	for (;;) {
+		validate_user_addr (p);
+		if (*p == '\0')
+			return;
+		p++;
+	}
 }
 
 /* 빈 fd 칸에 파일을 넣고 그 번호를 돌려준다. 자리가 없으면 -1. (B) */
