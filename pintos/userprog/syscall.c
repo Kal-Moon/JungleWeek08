@@ -154,23 +154,78 @@ sys_wait (tid_t pid) {
 
 /* 파일을 만든다. (B) */
 static bool
-sys_create (const char *file UNUSED, unsigned initial_size UNUSED) {
-	/* TODO (B): 구현. */
-	sys_exit (-1);
+sys_create (const char *file, unsigned initial_size) {
+	bool success;
+
+	/* 유저 포인터 검증은 A 담당 코드와 연동해야 한다. */
+	validate_user_string (file);
+
+	/* 파일 시스템에 접근하므로 락을 획득한다. */
+	lock_acquire (&filesys_lock);
+
+	/* 파일을 생성한다. 이미 존재하거나 생성할 수 없으면 false다. */
+	success = filesys_create (file, initial_size);
+
+	/* 성공과 실패 모두 락을 해제해야 한다. */
+	lock_release (&filesys_lock);
+
+	return success;
 }
 
 /* 파일을 지운다. (B) */
 static bool
-sys_remove (const char *file UNUSED) {
-	/* TODO (B): 구현. */
-	sys_exit (-1);
+sys_remove (const char *file) {
+	bool success;
+
+	/* 파일 이름이 유저 메모리에 있는 문자열인지 검증한다. */
+	validate_user_string (file);
+
+	/* 파일 시스템에 접근하므로 락을 획득한다. */
+	lock_acquire (&filesys_lock);
+
+	/* 해당 파일을 삭제한다. */
+	success = filesys_remove (file);
+
+	/* 파일 시스템 락을 해제한다. */
+	lock_release (&filesys_lock);
+
+	return success;
 }
 
 /* 파일을 열고 fd 를 돌려준다. (B) */
 static int
-sys_open (const char *file UNUSED) {
-	/* TODO (B): 구현. */
-	sys_exit (-1);
+sys_open (const char *file) {
+	struct file *opened_file;
+	int fd;
+
+	/* 파일 이름을 안전하게 읽을 수 있는지 검사한다. */
+	validate_user_string (file);
+
+	/* 파일 시스템 접근을 보호한다. */
+	lock_acquire (&filesys_lock);
+
+	/* 파일을 연다. 열기에 실패하면 NULL이다. */
+	opened_file = filesys_open (file);
+
+	if (opened_file == NULL) {
+		lock_release (&filesys_lock);
+		return -1;
+	}
+
+	/* 열린 파일을 현재 프로세스의 FD 테이블에 등록한다. */
+	fd = fd_alloc (opened_file);
+
+	/* FD를 할당하지 못했다면 열린 파일을 닫아 자원을 정리한다. */
+	if (fd == -1) {
+		file_close (opened_file);
+		lock_release (&filesys_lock);
+		return -1;
+	}
+
+	/* 모든 작업이 끝났으므로 락을 해제한다. */
+	lock_release (&filesys_lock);
+
+	return fd;
 }
 
 /* 파일 크기를 돌려준다. (B) */
@@ -210,9 +265,19 @@ sys_tell (int fd UNUSED) {
 
 /* fd 를 닫는다. (B) */
 static void
-sys_close (int fd UNUSED) {
-	/* TODO (B): 구현. */
-	sys_exit (-1);
+sys_close (int fd) {
+	struct file *file = fd_lookup (fd);
+
+    /* 잘못된 FD이거나 이미 닫힌 FD면 무시한다. */
+    if (file == NULL)
+        return;
+
+    /* 닫기 전에 슬롯을 비워 중복 close를 방지한다. */
+    thread_current ()->fd_table[fd] = NULL;
+
+    lock_acquire (&filesys_lock);
+    file_close (file);
+    lock_release (&filesys_lock);
 }
 
 /* 유저가 넘긴 주소 하나를 검사한다. NULL, 커널 영역, 매핑 안 된 주소면 exit (-1). (A) */
@@ -235,14 +300,68 @@ validate_user_string (const char *str UNUSED) {
 
 /* 빈 fd 칸에 파일을 넣고 그 번호를 돌려준다. 자리가 없으면 -1. (B) */
 int
-fd_alloc (struct file *file UNUSED) {
-	/* TODO (B): 구현. */
+fd_alloc (struct file *file) {
+	struct thread *cur = thread_current ();
+	int fd;
+	int checked = 0;
+
+	/* 파일이 없거나 FD 테이블이 아직 준비되지 않았다면 할당하지 않는다. */
+	if (file == NULL || cur->fd_table == NULL) {
+		return -1;
+	}
+
+	/* 다음에 사용할 FD 번호부터 빈 슬롯 검색을 시작한다. */
+	fd = cur->next_fd;
+
+	/* FD 0과 1은 콘솔용으로 예약되어 있으므로 2부터 검색한다. */
+	if (fd < 2 || fd >= FD_MAX) {
+		fd = 2;
+	}
+
+	/* FD 테이블의 모든 파일 슬롯을 검사할 때까지 빈 번호를 찾는다. */
+	while (checked < FD_MAX - 2) {
+		/* 현재 FD 슬롯이 비어 있으면 해당 파일을 등록한다. */
+		if (cur->fd_table[fd] == NULL) {
+			cur->fd_table[fd] = file;
+
+			/* 다음 할당은 이번 FD의 다음 번호부터 시작하도록 기록한다. */
+			cur->next_fd = fd + 1;
+
+			/* 테이블 끝에 도달하면 2부터 다시 검색한다. */
+			if (cur->next_fd >= FD_MAX)
+				cur->next_fd = 2;
+
+			/* 파일이 등록된 FD 번호를 반환한다. */
+			return fd;
+		}
+
+		/* 현재 슬롯이 사용 중이면 다음 FD 번호를 검사한다. */
+		fd++;
+
+		/* 테이블 범위를 벗어나면 2부터 다시 검색한다. */
+		if (fd >= FD_MAX)
+			fd = 2;
+
+		checked++;
+	}
+
+	/* 사용 가능한 FD 슬롯이 없으면 할당 실패를 반환한다. */
 	return -1;
 }
 
 /* fd 로 열린 파일을 찾는다. 없거나 범위 밖이면 NULL. (B) */
 struct file *
-fd_lookup (int fd UNUSED) {
-	/* TODO (B): 구현. */
-	return NULL;
+fd_lookup (int fd) {
+	struct thread *cur = thread_current ();
+
+	/* FD 0과 1은 일반 파일용 FD가 아니다. */
+	if (fd < 2 || fd >= FD_MAX)
+		return NULL;
+
+	/* FD 테이블이 아직 생성되지 않았다면 파일을 찾을 수 없다. */
+	if (cur->fd_table == NULL)
+		return NULL;
+
+	/* 해당 슬롯의 파일 포인터를 반환한다. 빈 슬롯이면 NULL이다. */
+	return cur->fd_table[fd];
 }
