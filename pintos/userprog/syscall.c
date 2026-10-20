@@ -12,6 +12,8 @@
 #include "userprog/process.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "threads/vaddr.h"
+#include "threads/mmu.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -37,7 +39,7 @@ static void sys_close (int fd);
  *
  * Previously system call services was handled by the interrupt handler
  * (e.g. int 0x80 in linux). However, in x86-64, the manufacturer supplies
- * efficient path for requesting the system call, the `syscall` instruction.
+ * efficient path for requesting the system call, the syscall instruction.
  *
  * The syscall instruction works by reading the values from the the Model
  * Specific Register (MSR). For the details, see the manual. */
@@ -190,8 +192,11 @@ sys_read (int fd UNUSED, void *buffer UNUSED, unsigned size UNUSED) {
 /* 콘솔(fd 1, A) 또는 파일(B)에 쓴다. */
 static int
 sys_write (int fd, const void *buffer, unsigned size) {
+	/* 락을 쥔 채 exit 하지 않도록 파일 락보다 먼저 검사한다. */
+	validate_user_buffer(buffer, size);
+
 	/* fd 1 은 콘솔. 여러 번 나눠 출력하면 다른 프로세스 출력과 섞일 수 있어
-	   콘솔 락을 한 번만 잡는 putbuf () 로 한 번에 출력한다. */
+	   콘솔 락을 한 번만 잡는 putbuf () 로 한 번에 출력한다. */	
 	if (fd == 1) {
 		putbuf (buffer, size);
 		return size;
@@ -223,20 +228,34 @@ sys_close (int fd UNUSED) {
 
 /* 유저가 넘긴 주소 하나를 검사한다. NULL, 커널 영역, 매핑 안 된 주소면 exit (-1). (A) */
 void
-validate_user_addr (const void *uaddr UNUSED) {
-	/* TODO (A): 구현. */
+validate_user_addr (const void *uaddr) {
+	/* pml4_get_page () 는 커널 주소를 받으면 ASSERT 로 멈추므로 커널 영역부터 거른다. */
+	if (uaddr == NULL || !is_user_vaddr (uaddr)
+			|| pml4_get_page (thread_current ()->pml4, uaddr) == NULL)
+		sys_exit (-1);
 }
 
 /* 버퍼 전체(buffer ~ buffer + size - 1)를 검사한다. 페이지 경계 포함. (A) */
 void
-validate_user_buffer (const void *buffer UNUSED, unsigned size UNUSED) {
-	/* TODO (A): 구현. */
+validate_user_buffer (const void *buffer, unsigned size) {
+	const uint8_t *p = buffer;
+
+	for (unsigned i = 0; i < size; i++)
+		validate_user_addr (p + i);
 }
 
 /* 문자열을 '\0' 까지 검사한다. (A) */
 void
-validate_user_string (const char *str UNUSED) {
-	/* TODO (A): 구현. */
+validate_user_string (const char *str) {
+	const char *p = str;
+
+	/* 길이를 모르니 한 글자씩 가되, 커널이 읽기 전에 그 칸부터 검사한다. */
+	for (;;) {
+		validate_user_addr (p);
+		if (*p == '\0')
+			return;
+		p++;
+	}
 }
 
 /* 빈 fd 칸에 파일을 넣고 그 번호를 돌려준다. 자리가 없으면 -1. (B) */
