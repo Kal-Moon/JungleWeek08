@@ -14,6 +14,9 @@
 #include "filesys/file.h"
 #include "threads/vaddr.h"
 #include "threads/mmu.h"
+#include "threads/palloc.h"     /* palloc_get_page */
+#include <string.h>             /* strlcpy */
+
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -143,9 +146,24 @@ sys_fork (const char *thread_name UNUSED, struct intr_frame *f UNUSED) {
 
 /* 현재 프로세스를 다른 프로그램으로 바꾼다. (A) */
 static int
-sys_exec (const char *cmd_line UNUSED) {
-	/* TODO (A): 구현. */
-	sys_exit (-1);
+sys_exec (const char *cmd_line) {
+char *cmd_copy;
+
+	/* 아래에서 커널이 문자열을 읽기 전에, 잘못된 주소면 이 프로세스만 끝낸다. */
+	validate_user_string (cmd_line);
+
+	/* process_exec () 는 load 전에 지금 유저 메모리를 지우고, 끝나면 받은 문자열을
+	   페이지로 해제한다. 그래서 유저 문자열을 그대로 넘기지 않고 커널 페이지에 복사한다. */
+	cmd_copy = palloc_get_page (0);
+	if (cmd_copy == NULL)
+		sys_exit (-1);
+	strlcpy (cmd_copy, cmd_line, PGSIZE);
+
+	/* 성공하면 새 프로그램으로 넘어가 돌아오지 않는다. 돌아왔다면 로드에 실패한 것이다.
+	   cmd_copy 는 process_exec () 안에서 이미 해제됐다. */
+	if (process_exec (cmd_copy) < 0)
+		sys_exit (-1);
+	return -1;
 }
 
 /* 자식이 끝날 때까지 기다리고 종료 상태를 받는다. (C) */
