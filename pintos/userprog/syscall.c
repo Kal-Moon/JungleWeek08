@@ -17,6 +17,7 @@
 #include "threads/palloc.h"     /* palloc_get_page */
 #include <string.h>             /* strlcpy */
 
+
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
